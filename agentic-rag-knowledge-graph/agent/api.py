@@ -35,64 +35,88 @@ except ImportError as e:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan events"""
+    """Application lifespan events with detailed logging"""
     global auto_ingestion_service
     
-    logger.info("Starting up agentic RAG API...")
+    # This should appear in logs
+    logger.info("🚀 LIFESPAN: Starting up agentic RAG API...")
+    print("🚀 LIFESPAN: Starting up agentic RAG API...")  # Force print to ensure visibility
     
     try:
-        logger.info("Database initialized")
-        await initialize_graph()
-        logger.info("Graph initialized")
+        # Database initialization
+        logger.info("📊 LIFESPAN: Database initialized")
+        print("📊 LIFESPAN: Database initialized")
         
-        # Start auto-ingestion service with better error handling
+        # Graph initialization  
+        await initialize_graph()
+        logger.info("🕸️ LIFESPAN: Graph initialized")
+        print("🕸️ LIFESPAN: Graph initialized")
+        
+        # Auto-ingestion service initialization
+        logger.info("🔧 LIFESPAN: Checking auto-ingestion service availability...")
+        print("🔧 LIFESPAN: Checking auto-ingestion service availability...")
+        
+        logger.info(f"🔧 LIFESPAN: AutoIngestionService available: {AutoIngestionService is not None}")
+        print(f"🔧 LIFESPAN: AutoIngestionService available: {AutoIngestionService is not None}")
+        
         if AutoIngestionService:
-            logger.info("🔧 Initializing auto-ingestion service...")
+            logger.info("🔧 LIFESPAN: Creating auto-ingestion service...")
+            print("🔧 LIFESPAN: Creating auto-ingestion service...")
+            
             try:
                 auto_ingestion_service = AutoIngestionService()
-                logger.info("🔧 Auto-ingestion service instance created")
+                logger.info("✅ LIFESPAN: Auto-ingestion service instance created")
+                print("✅ LIFESPAN: Auto-ingestion service instance created")
                 
-                # Start it as a background task with proper error handling
-                async def start_ingestion_service():
+                # Start background task
+                async def start_ingestion():
                     try:
-                        logger.info("🚀 Starting auto-ingestion service background task...")
+                        logger.info("🚀 LIFESPAN: Starting auto-ingestion background task...")
+                        print("🚀 LIFESPAN: Starting auto-ingestion background task...")
                         await auto_ingestion_service.start()
                     except Exception as e:
-                        logger.error(f"❌ Auto-ingestion service failed: {e}")
-                        import traceback
-                        logger.error(traceback.format_exc())
+                        logger.error(f"❌ LIFESPAN: Auto-ingestion start failed: {e}")
+                        print(f"❌ LIFESPAN: Auto-ingestion start failed: {e}")
                 
-                # Create and start the task
-                ingestion_task = asyncio.create_task(start_ingestion_service())
-                logger.info("🤖 Auto-ingestion background task created")
-                
-                # Give it a moment to start
-                await asyncio.sleep(1)
+                # Create background task
+                task = asyncio.create_task(start_ingestion())
+                logger.info("📋 LIFESPAN: Background task created")
+                print("📋 LIFESPAN: Background task created")
                 
             except Exception as e:
-                logger.error(f"❌ Failed to initialize auto-ingestion service: {e}")
+                logger.error(f"❌ LIFESPAN: Failed to create auto-ingestion service: {e}")
+                print(f"❌ LIFESPAN: Failed to create auto-ingestion service: {e}")
                 import traceback
-                logger.error(traceback.format_exc())
+                logger.error(f"🔍 LIFESPAN: Traceback: {traceback.format_exc()}")
+                print(f"🔍 LIFESPAN: Traceback: {traceback.format_exc()}")
         else:
-            logger.warning("⚠️ AutoIngestionService not available")
+            logger.warning("⚠️ LIFESPAN: AutoIngestionService class not available")
+            print("⚠️ LIFESPAN: AutoIngestionService class not available")
         
-        logger.info("✅ Agentic RAG API startup complete!")
+        logger.info("✅ LIFESPAN: Startup complete, yielding control...")
+        print("✅ LIFESPAN: Startup complete, yielding control...")
+        
+        # Application runs here
         yield
         
     except Exception as e:
-        logger.error(f"Startup failed: {e}")
+        logger.error(f"💥 LIFESPAN: Startup failed: {e}")
+        print(f"💥 LIFESPAN: Startup failed: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"🔍 LIFESPAN: Error traceback: {traceback.format_exc()}")
+        print(f"🔍 LIFESPAN: Error traceback: {traceback.format_exc()}")
         raise
     finally:
-        logger.info("Shutting down...")
-        if auto_ingestion_service and hasattr(auto_ingestion_service, 'observer'):
-            try:
-                auto_ingestion_service.observer.stop()
-                auto_ingestion_service.observer.join()
-                logger.info("🛑 File watcher stopped")
-            except Exception as e:
-                logger.error(f"Error stopping file watcher: {e}")
+        logger.info("🛑 LIFESPAN: Shutdown started")
+        print("🛑 LIFESPAN: Shutdown started")
+
+# Make sure the app uses this lifespan
+app = FastAPI(
+    title="Agentic RAG API - Secured",
+    description="RAG system with authentication",
+    version="1.0.0-auth",
+    lifespan=lifespan  # Make sure this is set!
+)
 
 
 
