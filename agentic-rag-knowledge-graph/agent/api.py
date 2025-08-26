@@ -357,12 +357,6 @@ async def check_directories(authenticated: bool = Depends(verify_auth)):
                             "path": str(item),
                             "modified": item.stat().st_mtime
                         })
-                    elif item.is_dir():
-                        files.append({
-                            "name": f"{item.name}/",
-                            "type": "directory",
-                            "path": str(item)
-                        })
             except Exception as e:
                 files.append({"error": str(e)})
                 
@@ -375,6 +369,53 @@ async def check_directories(authenticated: bool = Depends(verify_auth)):
             result["directories"][topic] = {"exists": False}
     
     return result
+
+@app.post("/debug/recreate-service")
+async def recreate_service(authenticated: bool = Depends(verify_auth)):
+    """Recreate the auto-ingestion service from scratch"""
+    global auto_ingestion_service
+    
+    try:
+        # Stop existing service if it exists
+        if auto_ingestion_service:
+            if hasattr(auto_ingestion_service, 'observer') and auto_ingestion_service.observer:
+                try:
+                    if auto_ingestion_service.observer.is_alive():
+                        auto_ingestion_service.observer.stop()
+                        auto_ingestion_service.observer.join()
+                    logger.info("🛑 Stopped existing observer")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error stopping observer: {e}")
+            
+            auto_ingestion_service = None
+            logger.info("🗑️ Cleared existing service")
+        
+        # Recreate service
+        if not AutoIngestionService:
+            return {"error": "AutoIngestionService class not available"}
+        
+        logger.info("🔧 Creating new auto-ingestion service...")
+        auto_ingestion_service = AutoIngestionService()
+        logger.info("✅ New auto-ingestion service created")
+        
+        # Check what methods are available
+        available_methods = [method for method in dir(auto_ingestion_service) if not method.startswith('_')]
+        
+        return {
+            "message": "Auto-ingestion service recreated",
+            "available_methods": available_methods,
+            "has_get_status": hasattr(auto_ingestion_service, 'get_status'),
+            "has_queue": hasattr(auto_ingestion_service, 'queue'),
+            "has_observer": hasattr(auto_ingestion_service, 'observer')
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Recreate service error: {e}")
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 @app.post("/debug/manual-scan")
 async def manual_scan(authenticated: bool = Depends(verify_auth)):
@@ -510,13 +551,39 @@ async def debug_version():
 
 @app.get("/debug/lifespan-status")
 async def debug_lifespan_status():
-    """Check if lifespan was called and service state"""
-    return {
+    """Check if lifespan was called and service state (safe version)"""
+    result = {
         "auto_ingestion_service_created": auto_ingestion_service is not None,
         "auto_ingestion_class_available": AutoIngestionService is not None,
-        "service_status": auto_ingestion_service.get_status() if auto_ingestion_service else "No service instance",
-        "timestamp": "2024-12-26-v4"
+        "timestamp": "2024-12-26-v5"
     }
+    
+    if auto_ingestion_service:
+        # Safely check for methods
+        try:
+            if hasattr(auto_ingestion_service, 'get_status'):
+                result["service_status"] = auto_ingestion_service.get_status()
+            else:
+                result["service_status"] = "get_status method missing"
+                
+            # Check available methods
+            result["available_methods"] = [method for method in dir(auto_ingestion_service) if not method.startswith('_')]
+            
+            # Check queue if available
+            if hasattr(auto_ingestion_service, 'queue'):
+                if hasattr(auto_ingestion_service.queue, 'get_status'):
+                    result["queue_status"] = auto_ingestion_service.queue.get_status()
+                else:
+                    result["queue_status"] = "queue.get_status method missing"
+            else:
+                result["queue_status"] = "queue attribute missing"
+                
+        except Exception as e:
+            result["service_status"] = f"Error checking status: {e}"
+    else:
+        result["service_status"] = "No service instance"
+    
+    return result
 
 @app.post("/debug/force-create-service")
 async def force_create_service(authenticated: bool = Depends(verify_auth)):

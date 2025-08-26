@@ -233,6 +233,25 @@ class AutoIngestionService:
             logger.warning("⚠️ Watchdog not available, file watching disabled")
         
         logger.info("✅ AutoIngestionService initialization complete")
+
+    def get_status(self) -> Dict:
+        try:
+            return {
+                'service': 'auto-ingestion-service',
+                'status': 'running',
+                'watched_directory': str(self.watch_dir),
+                'watchdog_available': WATCHDOG_AVAILABLE,
+                'observer_alive': self.observer.is_alive() if self.observer else False,
+                'queue_status': self.queue.get_status() if hasattr(self.queue, 'get_status') else "queue status unavailable",
+                'recent_completed': list(self.queue.completed.values())[-5:] if hasattr(self.queue, 'completed') else [],
+                'recent_failed': list(self.queue.failed.values())[-5:] if hasattr(self.queue, 'failed') else []
+            }
+        except Exception as e:
+            return {
+                'service': 'auto-ingestion-service',
+                'status': 'error',
+                'error': str(e)
+            }
     
     async def start(self):
         """Start the auto-ingestion service"""
