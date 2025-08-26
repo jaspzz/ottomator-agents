@@ -242,6 +242,7 @@ class AutoIngestionService:
             'watched_directory': str(self.watch_dir),
             'supported_extensions': self.supported_extensions,
             'watchdog_available': WATCHDOG_AVAILABLE,
+            'background_processor_running': hasattr(self, 'processing_task') and not self.processing_task.done(),
             'queue_status': self.queue.get_status(),
             'recent_completed': list(self.queue.completed.values())[-5:],
             'recent_failed': list(self.queue.failed.values())[-5:]
