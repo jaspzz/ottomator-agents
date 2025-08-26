@@ -260,37 +260,49 @@ class AutoIngestionService:
         # Process existing files
         await self.scan_existing_files()
         
-        # Start background processor
+        # Start background processor - THIS IS THE KEY FIX
         logger.info("⚙️ Starting background job processor...")
-        await self.process_jobs_loop()
+        
+        # Create the processing task but don't await it (so it runs in background)
+        processing_task = asyncio.create_task(self.process_jobs_loop())
+        logger.info("📋 Background processing task created")
+        
+        # Don't await the processing_task here - let it run in background
+        # The start() method should return so the lifespan can complete
     
-    async def process_jobs_loop(self):
-        """Main processing loop"""
-        while True:
-            try:
-                # Get next job from queue
-                job = await self.queue.get_job()
-                self.queue.processing[job['id']] = job
-                
-                logger.info(f"⚙️ Processing job {job['id']}: {Path(job['file_path']).name}")
-                
-                # Process the file
-                success = await self.process_job(job)
-                
-                # Move job to completed or failed
-                if success:
-                    self.queue.completed[job['id']] = {**job, 'completed_at': datetime.now().isoformat()}
-                    await self.move_file_to_processed(job)
-                else:
-                    self.queue.failed[job['id']] = {**job, 'failed_at': datetime.now().isoformat()}
-                    await self.move_file_to_failed(job)
-                
-                # Remove from processing
-                del self.queue.processing[job['id']]
-                
-            except Exception as e:
-                logger.error(f"❌ Processing loop error: {e}")
-                await asyncio.sleep(5)  # Wait before continuing
+async def process_jobs_loop(self):
+    """Main processing loop - runs forever in background"""
+    logger.info("🔄 Starting job processing loop...")
+    
+    while True:
+        try:
+            logger.info("⏳ Waiting for jobs in queue...")
+            # Get next job from queue
+            job = await self.queue.get_job()
+            self.queue.processing[job['id']] = job
+            
+            logger.info(f"⚙️ Processing job {job['id']}: {Path(job['file_path']).name}")
+            
+            # Process the file
+            success = await self.process_job(job)
+            
+            # Move job to completed or failed
+            if success:
+                self.queue.completed[job['id']] = {**job, 'completed_at': datetime.now().isoformat()}
+                await self.move_file_to_processed(job)
+                logger.info(f"✅ Job {job['id']} completed successfully")
+            else:
+                self.queue.failed[job['id']] = {**job, 'failed_at': datetime.now().isoformat()}
+                await self.move_file_to_failed(job)
+                logger.error(f"❌ Job {job['id']} failed")
+            
+            # Remove from processing
+            del self.queue.processing[job['id']]
+            
+        except Exception as e:
+            logger.error(f"❌ Processing loop error: {e}")
+            await asyncio.sleep(5)  # Wait before continuing
+
     
     async def scan_existing_files(self):
         """Scan for existing files in watch directories"""

@@ -330,6 +330,139 @@ async def vector_search(
         logger.error(f"Vector search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/debug/check-directories")
+async def check_directories(authenticated: bool = Depends(verify_auth)):
+    """Check what files are actually in the watch directories"""
+    watch_dir = Path("/app/ingestion-watch")
+    
+    result = {
+        "watch_dir_exists": watch_dir.exists(),
+        "watch_dir_path": str(watch_dir),
+        "directories": {}
+    }
+    
+    topics = ['business-central', 'ai-research', 'cloud-computing', 'general', 'processed', 'failed']
+    
+    for topic in topics:
+        topic_dir = watch_dir / topic
+        if topic_dir.exists():
+            files = []
+            try:
+                for item in topic_dir.iterdir():
+                    if item.is_file():
+                        files.append({
+                            "name": item.name,
+                            "size": item.stat().st_size,
+                            "suffix": item.suffix,
+                            "path": str(item),
+                            "modified": item.stat().st_mtime
+                        })
+                    elif item.is_dir():
+                        files.append({
+                            "name": f"{item.name}/",
+                            "type": "directory",
+                            "path": str(item)
+                        })
+            except Exception as e:
+                files.append({"error": str(e)})
+                
+            result["directories"][topic] = {
+                "exists": True,
+                "item_count": len(files),
+                "items": files
+            }
+        else:
+            result["directories"][topic] = {"exists": False}
+    
+    return result
+
+@app.post("/debug/manual-scan")
+async def manual_scan(authenticated: bool = Depends(verify_auth)):
+    """Manually scan for files and add to queue"""
+    if not auto_ingestion_service:
+        return {"error": "Auto-ingestion service not available"}
+    
+    try:
+        # Force scan for existing files
+        await auto_ingestion_service.scan_existing_files()
+        
+        return {
+            "message": "Manual scan completed",
+            "queue_status": auto_ingestion_service.queue.get_status(),
+            "service_status": auto_ingestion_service.get_status()
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/start-file-watcher")
+async def start_file_watcher(authenticated: bool = Depends(verify_auth)):
+    """Manually start the file watcher"""
+    if not auto_ingestion_service:
+        return {"error": "Auto-ingestion service not available"}
+    
+    try:
+        if auto_ingestion_service.observer and auto_ingestion_service.handler:
+            if not auto_ingestion_service.observer.is_alive():
+                auto_ingestion_service.observer.schedule(
+                    auto_ingestion_service.handler,
+                    str(auto_ingestion_service.watch_dir),
+                    recursive=True
+                )
+                auto_ingestion_service.observer.start()
+                
+                # Wait a moment for it to start
+                await asyncio.sleep(1)
+                
+                return {
+                    "message": "File watcher started",
+                    "observer_alive": auto_ingestion_service.observer.is_alive(),
+                    "watched_path": str(auto_ingestion_service.watch_dir)
+                }
+            else:
+                return {"message": "File watcher already running"}
+        else:
+            return {"error": "File watcher components not available"}
+            
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/process-single-file")
+async def process_single_file(
+    file_path: str,
+    topic: str,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Process a single file manually for testing"""
+    if not auto_ingestion_service:
+        return {"error": "Auto-ingestion service not available"}
+    
+    try:
+        # Add the file to the queue
+        job_id = await auto_ingestion_service.queue.add_job(file_path, topic, priority=10)
+        
+        return {
+            "message": f"File queued for processing: {file_path}",
+            "job_id": job_id,
+            "topic": topic,
+            "queue_status": auto_ingestion_service.queue.get_status()
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 @app.post("/search/graph")
 async def graph_search(
     request: ContextRequest,
