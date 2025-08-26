@@ -424,11 +424,11 @@ async def manual_scan(authenticated: bool = Depends(verify_auth)):
         return {"error": "Auto-ingestion service not available"}
     
     try:
-        # Force scan for existing files
-        await auto_ingestion_service.scan_existing_files()
+        # Use the correct method name
+        found_files = await auto_ingestion_service.scan_existing_files()
         
         return {
-            "message": "Manual scan completed",
+            "message": f"Manual scan completed - found {found_files} files",
             "queue_status": auto_ingestion_service.queue.get_status(),
             "service_status": auto_ingestion_service.get_status()
         }
@@ -481,16 +481,16 @@ async def process_single_file(
     topic: str,
     authenticated: bool = Depends(verify_auth)
 ):
-    """Process a single file manually for testing"""
+    """Process a single file manually"""
     if not auto_ingestion_service:
         return {"error": "Auto-ingestion service not available"}
     
     try:
-        # Add the file to the queue
+        # Add file to queue
         job_id = await auto_ingestion_service.queue.add_job(file_path, topic, priority=10)
         
         return {
-            "message": f"File queued for processing: {file_path}",
+            "message": f"File queued: {file_path}",
             "job_id": job_id,
             "topic": topic,
             "queue_status": auto_ingestion_service.queue.get_status()
