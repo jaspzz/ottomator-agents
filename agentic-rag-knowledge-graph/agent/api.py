@@ -1,6 +1,11 @@
 import asyncio
 import logging
 import os
+from fastapi import UploadFile, File, Form
+from fastapi.responses import HTMLResponse
+import aiofiles
+from pathlib import Path
+from typing import List
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
@@ -10,6 +15,47 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
+
+
+try:
+    from ingestion.file_watcher import AutoIngestionService
+except ImportError:
+    logger.warning("Auto-ingestion service not available")
+    AutoIngestionService = None
+
+# Global service instance
+auto_ingestion_service = None
+
+# Update your lifespan function
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    global auto_ingestion_service
+    
+    logger.info("Starting up agentic RAG API...")
+    
+    try:
+        logger.info("Database initialized")
+        await initialize_graph()
+        logger.info("Graph initialized")
+        
+        # Start auto-ingestion service
+        if AutoIngestionService:
+            auto_ingestion_service = AutoIngestionService()
+            asyncio.create_task(auto_ingestion_service.start())
+            logger.info("🤖 Auto-ingestion service started")
+        else:
+            logger.warning("Auto-ingestion service not available")
+        
+        logger.info("✅ Agentic RAG API startup complete!")
+        yield
+        
+    except Exception as e:
+        logger.error(f"Startup failed: {e}")
+        raise
+    finally:
+        logger.info("Shutting down...")
+
 
 # ============= INLINE AUTHENTICATION =============
 security = HTTPBearer(auto_error=False)
@@ -117,6 +163,21 @@ class ContextResponse(BaseModel):
     total_results: int
     context_type: str
     metadata: Optional[Dict[str, Any]] = None
+
+# Add topic models
+class TopicContextRequest(BaseModel):
+    query: str
+    topic: Optional[str] = None  # Topic slug
+    context_type: Optional[str] = "auto"
+    limit: Optional[int] = 5
+    session_id: Optional[str] = None
+
+class TopicInfo(BaseModel):
+    name: str
+    slug: str
+    description: str
+    document_count: int
+    chunk_count: int
 
 # ============= ORIGINAL LIFESPAN LOGIC =============
 @asynccontextmanager
@@ -280,40 +341,40 @@ async def get_context_summary(
 
 @app.post("/context", response_model=ContextResponse)
 async def get_context(
-    request: ContextRequest,
+    request: TopicContextRequest,  # Updated to use TopicContextRequest
     authenticated: bool = Depends(verify_auth)
 ):
-    """Get dynamic context for TypingMind agents"""
+    """Get dynamic context with optional topic filtering"""
     try:
-        if not rag_agent:
-            raise HTTPException(status_code=500, detail="RAG agent not available")
+        # Build the search prompt with topic context
+        search_prompt = f"Find relevant information about: {request.query}"
+        if request.topic:
+            search_prompt += f" (Focus on {request.topic} context)"
         
-        # Use the RAG agent's tools to get context
+        # Use your RAG agent with topic-aware search
         if AgentDependencies:
-            deps = AgentDependencies(session_id=request.session_id)
-            
-            # Run the agent but extract the sources/context instead of the full response
-            result = await rag_agent.run(
-                f"Find relevant information about: {request.query}", 
-                deps=deps
+            deps = AgentDependencies(
+                session_id=request.session_id,
+                context={'topic': request.topic}  # Pass topic to agent
             )
+            result = await rag_agent.run(search_prompt, deps=deps)
         else:
-            result = await rag_agent.run(f"Find relevant information about: {request.query}")
+            result = await rag_agent.run(search_prompt)
         
-        # Extract context items from the result
+        # Process results (your existing logic)
         context_items = []
         sources = getattr(result, 'sources', [])
         
-        # Convert agent sources to context items
-        for i, source in enumerate(sources[:request.limit]):
+        for source in sources[:request.limit]:
             context_items.append(ContextItem(
                 content=source.get('content', ''),
-                source=source.get('source', f'Document {i+1}'),
-                score=source.get('similarity', None),
+                source=source.get('source', 'Unknown'),
+                score=source.get('similarity'),
                 metadata={
+                    'topic': request.topic,
                     'document_title': source.get('document_title'),
                     'chunk_id': source.get('chunk_id'),
-                    'type': source.get('type', 'unknown')
+                    **source.get('metadata', {})
                 }
             ))
         
@@ -323,13 +384,117 @@ async def get_context(
             total_results=len(context_items),
             context_type=request.context_type or "auto",
             metadata={
-                "tools_used": getattr(result, 'tools_used', []),
-                "processing_time": getattr(result, 'processing_time', None)
+                "topic_filter": request.topic,
+                "tools_used": getattr(result, 'tools_used', [])
             }
         )
         
     except Exception as e:
         logger.error(f"Context error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/topics", response_model=List[TopicInfo])
+async def list_topics(authenticated: bool = Depends(verify_auth)):
+    """List all available topics"""
+    try:
+        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+        topics = await conn.fetch("""
+            SELECT 
+                t.name, t.slug, t.description,
+                COUNT(DISTINCT d.id) as document_count,
+                COUNT(c.id) as chunk_count
+            FROM topics t
+            LEFT JOIN documents d ON t.id = d.topic_id
+            LEFT JOIN chunks c ON t.id = c.topic_id
+            GROUP BY t.id, t.name, t.slug, t.description
+            ORDER BY t.name
+        """)
+        await conn.close()
+        
+        return [TopicInfo(**dict(topic)) for topic in topics]
+        
+    except Exception as e:
+        logger.error(f"Topics list error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/topics")
+async def create_topic(
+    topic: dict,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Create a new topic"""
+    try:
+        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+        result = await conn.fetchrow("""
+            INSERT INTO topics (name, description, slug)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (slug) DO UPDATE SET
+                name = EXCLUDED.name,
+                description = EXCLUDED.description
+            RETURNING id, name, slug, description
+        """, topic['name'], topic.get('description', ''), topic['slug'])
+        await conn.close()
+        
+        return dict(result)
+        
+    except Exception as e:
+        logger.error(f"Create topic error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/context/{topic_slug}")
+async def get_topic_context(
+    topic_slug: str,
+    request: ContextRequest,  # Use simpler request model
+    authenticated: bool = Depends(verify_auth)
+):
+    """Get context for a specific topic"""
+    topic_request = TopicContextRequest(
+        query=request.query,
+        topic=topic_slug,
+        context_type=request.context_type,
+        limit=request.limit,
+        session_id=request.session_id
+    )
+    return await get_context(topic_request, authenticated)
+
+@app.post("/context/auto-route")
+async def auto_route_context(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Automatically detect topic and route query"""
+    try:
+        # Simple keyword-based topic detection
+        query_lower = request.query.lower()
+        
+        topic = None
+        if any(term in query_lower for term in ['business central', 'dynamics', 'erp', 'finance', 'inventory']):
+            topic = 'business-central'
+        elif any(term in query_lower for term in ['ai', 'artificial intelligence', 'machine learning', 'openai', 'gpt']):
+            topic = 'ai-research'
+        elif any(term in query_lower for term in ['cloud', 'azure', 'aws', 'infrastructure']):
+            topic = 'cloud-computing'
+        
+        # Create topic-aware request
+        topic_request = TopicContextRequest(
+            query=request.query,
+            topic=topic,
+            context_type=request.context_type,
+            limit=request.limit,
+            session_id=request.session_id
+        )
+        
+        result = await get_context(topic_request, authenticated)
+        
+        # Add routing info to metadata
+        result.metadata = result.metadata or {}
+        result.metadata['detected_topic'] = topic
+        result.metadata['routing_method'] = 'keyword-based'
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Auto-route error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search", response_model=ContextResponse)  
