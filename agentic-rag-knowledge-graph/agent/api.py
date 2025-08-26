@@ -98,6 +98,26 @@ class StreamChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
 
+# New models for context API
+class ContextRequest(BaseModel):
+    query: str
+    context_type: Optional[str] = "auto"  # auto, vector, graph, hybrid
+    limit: Optional[int] = 5
+    session_id: Optional[str] = None
+
+class ContextItem(BaseModel):
+    content: str
+    source: str
+    score: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+class ContextResponse(BaseModel):
+    results: List[ContextItem]
+    query: str
+    total_results: int
+    context_type: str
+    metadata: Optional[Dict[str, Any]] = None
+
 # ============= ORIGINAL LIFESPAN LOGIC =============
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -149,19 +169,204 @@ app.add_middleware(
 
 # ============= ENDPOINTS =============
 
+@app.post("/search/vector")
+async def vector_search(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Vector-only search for semantic similarity"""
+    try:
+        # You can implement direct vector search here
+        # For now, use the agent with a vector-focused prompt
+        result = await rag_agent.run(
+            f"Search for documents semantically similar to: {request.query}",
+            deps=AgentDependencies(session_id=request.session_id) if AgentDependencies else None
+        )
+        
+        # Process and return results similar to get_context
+        context_items = []
+        sources = getattr(result, 'sources', [])
+        
+        for source in sources[:request.limit]:
+            context_items.append(ContextItem(
+                content=source.get('content', ''),
+                source=source.get('source', 'Vector Search'),
+                score=source.get('similarity'),
+                metadata={'search_type': 'vector', **source.get('metadata', {})}
+            ))
+        
+        return ContextResponse(
+            results=context_items,
+            query=request.query,
+            total_results=len(context_items),
+            context_type="vector"
+        )
+        
+    except Exception as e:
+        logger.error(f"Vector search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/search/graph")
+async def graph_search(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Knowledge graph search for relationships"""
+    try:
+        # Graph-focused search
+        result = await rag_agent.run(
+            f"Find relationships and connections related to: {request.query}",
+            deps=AgentDependencies(session_id=request.session_id) if AgentDependencies else None
+        )
+        
+        context_items = []
+        sources = getattr(result, 'sources', [])
+        
+        for source in sources[:request.limit]:
+            context_items.append(ContextItem(
+                content=source.get('content', ''),
+                source=source.get('source', 'Knowledge Graph'),
+                score=source.get('confidence'),
+                metadata={'search_type': 'graph', **source.get('metadata', {})}
+            ))
+        
+        return ContextResponse(
+            results=context_items,
+            query=request.query,
+            total_results=len(context_items),
+            context_type="graph"
+        )
+        
+    except Exception as e:
+        logger.error(f"Graph search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/context/summary")
+async def get_context_summary(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Get a summarized context for the query"""
+    try:
+        # Get detailed context first
+        context_response = await get_context(request, authenticated)
+        
+        # Create a summary from the results
+        if not context_response.results:
+            return {
+                "summary": f"No relevant information found for: {request.query}",
+                "query": request.query,
+                "sources_count": 0
+            }
+        
+        # Combine all content for summary
+        combined_content = "\n\n".join([
+            f"Source: {item.source}\nContent: {item.content}"
+            for item in context_response.results
+        ])
+        
+        return {
+            "summary": combined_content[:2000],  # Limit length
+            "query": request.query,
+            "sources_count": len(context_response.results),
+            "sources": [item.source for item in context_response.results]
+        }
+        
+    except Exception as e:
+        logger.error(f"Summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@app.post("/context", response_model=ContextResponse)
+async def get_context(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Get dynamic context for TypingMind agents"""
+    try:
+        if not rag_agent:
+            raise HTTPException(status_code=500, detail="RAG agent not available")
+        
+        # Use the RAG agent's tools to get context
+        if AgentDependencies:
+            deps = AgentDependencies(session_id=request.session_id)
+            
+            # Run the agent but extract the sources/context instead of the full response
+            result = await rag_agent.run(
+                f"Find relevant information about: {request.query}", 
+                deps=deps
+            )
+        else:
+            result = await rag_agent.run(f"Find relevant information about: {request.query}")
+        
+        # Extract context items from the result
+        context_items = []
+        sources = getattr(result, 'sources', [])
+        
+        # Convert agent sources to context items
+        for i, source in enumerate(sources[:request.limit]):
+            context_items.append(ContextItem(
+                content=source.get('content', ''),
+                source=source.get('source', f'Document {i+1}'),
+                score=source.get('similarity', None),
+                metadata={
+                    'document_title': source.get('document_title'),
+                    'chunk_id': source.get('chunk_id'),
+                    'type': source.get('type', 'unknown')
+                }
+            ))
+        
+        return ContextResponse(
+            results=context_items,
+            query=request.query,
+            total_results=len(context_items),
+            context_type=request.context_type or "auto",
+            metadata={
+                "tools_used": getattr(result, 'tools_used', []),
+                "processing_time": getattr(result, 'processing_time', None)
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Context error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/search", response_model=ContextResponse)  
+async def search_knowledge(
+    request: ContextRequest,
+    authenticated: bool = Depends(verify_auth)
+):
+    """Search knowledge base - alias for context endpoint"""
+    return await get_context(request, authenticated)
+
+@app.get("/context/test")
+async def test_context(
+    query: str = "Microsoft AI initiatives",
+    authenticated: bool = Depends(verify_auth)
+):
+    """Test the context API with a simple query"""
+    request = ContextRequest(query=query, limit=3)
+    return await get_context(request, authenticated)
+
 @app.get("/health")
 async def health():
-    """Health check with authentication status"""
+    """Health check with context API status"""
     return {
-        "status": "AUTH_VERSION_DEPLOYED",
-        "service": "agentic-rag-secured", 
-        "version": "1.0.0-auth",
+        "status": "CONTEXT_API_READY",
+        "service": "agentic-rag-context-api",
+        "version": "1.0.0-context",
         "auth_enabled": os.getenv('ENABLE_AUTH', 'false').lower() == 'true',
         "api_key_configured": bool(os.getenv('API_KEY')),
-        "environment_debug": {
-            "enable_auth": os.getenv('ENABLE_AUTH'),
-            "api_key_length": len(os.getenv('API_KEY', ''))
-        }
+        "endpoints": [
+            "/context",
+            "/search", 
+            "/search/vector",
+            "/search/graph",
+            "/context/summary",
+            "/context/test"
+        ],
+        "integration": "typingmind-dynamic-context"
     }
 
 @app.post("/chat", response_model=ChatResponse)
