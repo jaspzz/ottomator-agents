@@ -62,12 +62,17 @@ class IngestionQueue:
         }
 
 class AutoIngestionService:
+    
     def __init__(self):
         logger.info("🔧 Initializing AutoIngestionService...")
         
         # Initialize components
         self.queue = IngestionQueue()
         self.topic_ingester = TopicIngestion()
+        
+        # Set supported extensions including RTF
+        self.supported_extensions = ['.md', '.txt', '.pdf', '.docx', '.rtf']
+        logger.info(f"📋 Supported extensions: {self.supported_extensions}")
         
         # Set up directories
         self.watch_dir = Path("/app/ingestion-watch")
@@ -78,9 +83,6 @@ class AutoIngestionService:
         self.watch_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.failed_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Add RTF to supported extensions
-        self.supported_extensions = ['.md', '.txt', '.pdf', '.docx', '.rtf']
         
         # File watcher (if available)
         self.observer = Observer() if WATCHDOG_AVAILABLE else None
@@ -102,6 +104,7 @@ class AutoIngestionService:
     async def scan_existing_files(self):
         """Scan for existing files in watch directories"""
         logger.info("🔍 Scanning for existing files...")
+        logger.info(f"📋 Looking for files with extensions: {self.supported_extensions}")
         
         topic_folders = ['business-central', 'ai-research', 'cloud-computing', 'general']
         found_files = 0
@@ -111,13 +114,15 @@ class AutoIngestionService:
             if topic_dir.exists():
                 logger.info(f"📂 Scanning {topic} directory...")
                 for file_path in topic_dir.glob("*"):
-                    if file_path.is_file() and file_path.suffix in self.supported_extensions:
-                        job_id = await self.queue.add_job(str(file_path), topic, priority=1)
-                        found_files += 1
-                        logger.info(f"📋 Queued existing file: {file_path.name} → {topic}")
-                    else:
-                        if file_path.is_file():
+                    if file_path.is_file():
+                        if file_path.suffix in self.supported_extensions:
+                            job_id = await self.queue.add_job(str(file_path), topic, priority=1)
+                            found_files += 1
+                            logger.info(f"📋 Queued existing file: {file_path.name} → {topic}")
+                        else:
                             logger.info(f"⏭️ Skipped unsupported file: {file_path.name} (extension: {file_path.suffix})")
+                    else:
+                        logger.info(f"⏭️ Skipped non-file: {file_path.name}")
             else:
                 logger.info(f"📁 Creating topic directory: {topic_dir}")
                 topic_dir.mkdir(exist_ok=True)
@@ -226,6 +231,7 @@ class AutoIngestionService:
             'service': 'auto-ingestion-service',
             'status': 'running',
             'watched_directory': str(self.watch_dir),
+            'supported_extensions': self.supported_extensions,
             'watchdog_available': WATCHDOG_AVAILABLE,
             'queue_status': self.queue.get_status(),
             'recent_completed': list(self.queue.completed.values())[-5:],

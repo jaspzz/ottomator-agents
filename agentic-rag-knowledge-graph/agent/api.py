@@ -483,11 +483,18 @@ async def detailed_scan(authenticated: bool = Depends(verify_auth)):
     
     watch_dir = Path("/app/ingestion-watch")
     topic_folders = ['business-central', 'ai-research', 'cloud-computing', 'general']
-    supported_extensions = ['.md', '.txt', '.pdf', '.docx']
+    
+    # Get supported extensions from the service (not hardcoded)
+    if hasattr(auto_ingestion_service, 'supported_extensions'):
+        supported_extensions = auto_ingestion_service.supported_extensions
+    else:
+        # Fallback to extended list including RTF
+        supported_extensions = ['.md', '.txt', '.pdf', '.docx', '.rtf']
     
     scan_results = {
         "watch_dir_exists": watch_dir.exists(),
         "watch_dir_path": str(watch_dir),
+        "supported_extensions": supported_extensions,
         "scan_details": {},
         "total_files_found": 0,
         "total_files_queued": 0
