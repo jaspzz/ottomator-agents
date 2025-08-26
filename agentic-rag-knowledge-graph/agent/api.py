@@ -365,7 +365,7 @@ async def health_check():
         
         # Determine overall status
         if db_status and graph_status:
-            status = "healthyyyyy"
+            status = "healthy"
         elif db_status or graph_status:
             status = "degraded"
         else:
