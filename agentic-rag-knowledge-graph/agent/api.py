@@ -636,6 +636,47 @@ async def list_all_files(authenticated: bool = Depends(verify_auth)):
             "traceback": traceback.format_exc()
         }
 
+@app.get("/debug/database-status")
+async def database_status(authenticated: bool = Depends(verify_auth)):
+    """Check what's actually in the database"""
+    import asyncpg
+    
+    try:
+        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+        
+        # Check tables exist
+        tables = await conn.fetch("""
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('topics', 'documents', 'chunks')
+        """)
+        
+        # Check topics
+        topics = await conn.fetch("SELECT * FROM topics")
+        
+        # Check documents
+        documents = await conn.fetch("SELECT id, title, topic_id, created_at FROM documents LIMIT 10")
+        
+        # Check chunks
+        chunks = await conn.fetch("SELECT COUNT(*) as count FROM chunks")
+        
+        await conn.close()
+        
+        return {
+            "tables_exist": [dict(t) for t in tables],
+            "topics": [dict(t) for t in topics],
+            "documents_count": len(documents),
+            "documents_sample": [dict(d) for d in documents],
+            "chunks_count": dict(chunks[0])['count'] if chunks else 0
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.post("/debug/start-processing")
 async def start_processing(authenticated: bool = Depends(verify_auth)):
     """Manually start the background processing"""
@@ -920,6 +961,124 @@ async def list_topics(authenticated: bool = Depends(verify_auth)):
     except Exception as e:
         logger.error(f"Topics list error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug/create-topics")
+async def create_topics(authenticated: bool = Depends(verify_auth)):
+    """Create required topics in database"""
+    import asyncpg
+    
+    try:
+        conn = await asyncpg.connect(os.getenv('DATABASE_URL'))
+        
+        # Create topics table if it doesn't exist
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS topics (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                name VARCHAR(255) NOT NULL UNIQUE,
+                description TEXT,
+                slug VARCHAR(100) NOT NULL UNIQUE,
+                metadata JSONB DEFAULT '{}',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Insert default topics
+        topics_to_create = [
+            ('Microsoft Business Central', 'ERP and business management system content', 'business-central'),
+            ('AI Research', 'Artificial Intelligence research and developments', 'ai-research'),
+            ('Cloud Computing', 'Cloud services and infrastructure', 'cloud-computing'),
+            ('General', 'General purpose content', 'general')
+        ]
+        
+        created_topics = []
+        for name, description, slug in topics_to_create:
+            try:
+                topic_id = await conn.fetchval("""
+                    INSERT INTO topics (name, description, slug) 
+                    VALUES ($1, $2, $3) 
+                    ON CONFLICT (slug) DO UPDATE SET 
+                        name = EXCLUDED.name,
+                        description = EXCLUDED.description
+                    RETURNING id
+                """, name, description, slug)
+                created_topics.append({"name": name, "slug": slug, "id": str(topic_id)})
+            except Exception as e:
+                created_topics.append({"name": name, "slug": slug, "error": str(e)})
+        
+        await conn.close()
+        
+        return {
+            "message": "Topics created/updated",
+            "topics": created_topics
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/test-topic-ingestion")
+async def test_topic_ingestion(authenticated: bool = Depends(verify_auth)):
+    """Test topic ingestion directly"""
+    try:
+        if not auto_ingestion_service:
+            return {"error": "Auto-ingestion service not available"}
+        
+        # Create a simple test file
+        test_dir = Path("/tmp/topic_test")
+        test_dir.mkdir(exist_ok=True)
+        
+        test_file = test_dir / "test_document.md"
+        test_file.write_text("""
+# Test Document
+
+This is a test document to verify that topic ingestion is working correctly.
+
+## Section 1
+Some content about Microsoft Dynamics 365 Business Central.
+
+## Section 2  
+More content to test the chunking process.
+""")
+        
+        # Test ingestion
+        logger.info("🧪 Testing direct topic ingestion...")
+        
+        try:
+            await auto_ingestion_service.topic_ingester.ingest_topic_documents(
+                topic_slug="business-central",
+                documents_path=str(test_dir),
+                clean=False
+            )
+            
+            # Cleanup
+            shutil.rmtree(test_dir)
+            
+            return {
+                "result": "SUCCESS",
+                "message": "Direct topic ingestion completed without errors"
+            }
+            
+        except Exception as ingestion_error:
+            # Cleanup
+            shutil.rmtree(test_dir)
+            
+            import traceback
+            return {
+                "result": "FAILED",
+                "error": str(ingestion_error),
+                "traceback": traceback.format_exc()
+            }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 
 @app.post("/topics")
 async def create_topic(
