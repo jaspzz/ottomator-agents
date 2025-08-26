@@ -1024,6 +1024,172 @@ async def create_topics(authenticated: bool = Depends(verify_auth)):
 async def test_topic_ingestion(authenticated: bool = Depends(verify_auth)):
     """Test topic ingestion directly"""
     try:
+        # Import the TopicIngestion class directly
+        from ingestion.topic_ingest import TopicIngestion
+        
+        # Test creating the ingester
+        ingester = TopicIngestion()
+        
+        # Get business-central topic ID
+        topic_id = await ingester.get_topic_id('business-central')
+        
+        if not topic_id:
+            return {"error": "business-central topic not found"}
+        
+        return {
+            "message": "TopicIngestion class working",
+            "topic_id": topic_id,
+            "database_url_set": bool(os.getenv('DATABASE_URL')),
+            "test": "basic_initialization_successful"
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/test-rtf-processing")
+async def test_rtf_processing(
+    file_path: str = "/app/ingestion-watch/business-central/Administrating Microsoft Dynamics 365 Business Central Online - Andrey Baludin.rtf",
+    authenticated: bool = Depends(verify_auth)
+):
+    """Test RTF file processing directly"""
+    try:
+        from ingestion.topic_ingest import TopicIngestion
+        from pathlib import Path
+        
+        # Test file exists
+        test_file = Path(file_path)
+        if not test_file.exists():
+            return {"error": f"File not found: {file_path}"}
+        
+        # Test creating ingester
+        ingester = TopicIngestion()
+        
+        # Test reading file content
+        try:
+            content = ingester.read_file_content(test_file)
+            content_preview = content[:500] + "..." if len(content) > 500 else content
+        except Exception as e:
+            return {
+                "error": f"Failed to read RTF content: {e}",
+                "file_size": test_file.stat().st_size,
+                "file_exists": test_file.exists()
+            }
+        
+        # Test chunking
+        try:
+            chunks = ingester.simple_chunk_text(content)
+            chunk_preview = [chunk[:100] + "..." if len(chunk) > 100 else chunk for chunk in chunks[:3]]
+        except Exception as e:
+            return {
+                "error": f"Failed to chunk content: {e}",
+                "content_length": len(content)
+            }
+        
+        return {
+            "message": "RTF processing successful",
+            "file_path": file_path,
+            "file_size": test_file.stat().st_size,
+            "content_length": len(content),
+            "content_preview": content_preview,
+            "chunks_created": len(chunks),
+            "chunk_previews": chunk_preview,
+            "test": "rtf_processing_successful"
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/test-full-ingestion")
+async def test_full_ingestion(
+    file_path: str = "/app/ingestion-watch/business-central/Administrating Microsoft Dynamics 365 Business Central Online - Andrey Baludin.rtf",
+    authenticated: bool = Depends(verify_auth)
+):
+    """Test full ingestion pipeline for one file"""
+    try:
+        from ingestion.topic_ingest import TopicIngestion
+        from pathlib import Path
+        import tempfile
+        import shutil
+        
+        # Test file
+        source_file = Path(file_path)
+        if not source_file.exists():
+            return {"error": f"Source file not found: {file_path}"}
+        
+        # Create temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            temp_file = temp_path / source_file.name
+            
+            # Copy file to temp directory
+            shutil.copy2(source_file, temp_file)
+            
+            # Test ingestion
+            ingester = TopicIngestion()
+            
+            # Get topic ID
+            topic_id = await ingester.get_topic_id('business-central')
+            if not topic_id:
+                return {"error": "business-central topic not found"}
+            
+            # Test processing
+            await ingester.process_document_with_topic(temp_file, topic_id)
+            
+            return {
+                "message": "Full ingestion test successful",
+                "file_path": file_path,
+                "topic_id": topic_id,
+                "test": "full_ingestion_successful"
+            }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.get("/debug/check-striprtf")
+async def check_striprtf(authenticated: bool = Depends(verify_auth)):
+    """Check if striprtf library is available"""
+    try:
+        from striprtf.striprtf import rtf_to_text
+        
+        # Test with simple RTF content
+        test_rtf = r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Times New Roman;}} \f0\fs24 Hello World!}"
+        result = rtf_to_text(test_rtf)
+        
+        return {
+            "striprtf_available": True,
+            "test_conversion": result,
+            "message": "striprtf library working correctly"
+        }
+        
+    except ImportError:
+        return {
+            "striprtf_available": False,
+            "error": "striprtf library not installed",
+            "message": "Need to install striprtf library"
+        }
+    except Exception as e:
+        return {
+            "striprtf_available": False,
+            "error": str(e),
+            "message": "striprtf library has issues"
+        }
+
+@app.post("/debug/test-topic-ingestion")
+async def test_topic_ingestion(authenticated: bool = Depends(verify_auth)):
+    """Test topic ingestion directly"""
+    try:
         if not auto_ingestion_service:
             return {"error": "Auto-ingestion service not available"}
         
