@@ -341,6 +341,17 @@ async def graph_search(
         logger.error(f"Graph search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/debug/version")
+async def debug_version():
+    """Check what version of code is running"""
+    return {
+        "message": "Updated version with auto-ingestion debugging",
+        "timestamp": "2024-12-26-v3",
+        "auto_ingestion_service_instance": auto_ingestion_service is not None,
+        "auto_ingestion_class_available": AutoIngestionService is not None
+    }
+
+
 @app.post("/context/summary")
 async def get_context_summary(
     request: ContextRequest,
