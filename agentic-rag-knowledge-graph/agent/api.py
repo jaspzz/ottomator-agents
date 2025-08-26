@@ -375,6 +375,43 @@ async def debug_version():
         "auto_ingestion_class_available": AutoIngestionService is not None
     }
 
+@app.get("/debug/lifespan-status")
+async def debug_lifespan_status():
+    """Check if lifespan was called and service state"""
+    return {
+        "auto_ingestion_service_created": auto_ingestion_service is not None,
+        "auto_ingestion_class_available": AutoIngestionService is not None,
+        "service_status": auto_ingestion_service.get_status() if auto_ingestion_service else "No service instance",
+        "timestamp": "2024-12-26-v4"
+    }
+
+@app.post("/debug/force-create-service")
+async def force_create_service(authenticated: bool = Depends(verify_auth)):
+    """Force create the auto-ingestion service"""
+    global auto_ingestion_service
+    
+    try:
+        if auto_ingestion_service:
+            return {"message": "Service already exists", "status": auto_ingestion_service.get_status()}
+        
+        logger.info("🔧 FORCE: Creating auto-ingestion service...")
+        auto_ingestion_service = AutoIngestionService()
+        logger.info("✅ FORCE: Service created successfully")
+        
+        return {
+            "message": "Auto-ingestion service created successfully",
+            "status": auto_ingestion_service.get_status(),
+            "created_at": "force-created"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ FORCE: Failed to create service: {e}")
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 
 @app.post("/context/summary")
 async def get_context_summary(
