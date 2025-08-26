@@ -636,6 +636,37 @@ async def list_all_files(authenticated: bool = Depends(verify_auth)):
             "traceback": traceback.format_exc()
         }
 
+@app.post("/debug/start-processing")
+async def start_processing(authenticated: bool = Depends(verify_auth)):
+    """Manually start the background processing"""
+    if not auto_ingestion_service:
+        return {"error": "Auto-ingestion service not available"}
+    
+    try:
+        if hasattr(auto_ingestion_service, 'processing_task') and not auto_ingestion_service.processing_task.done():
+            return {"message": "Background processing already running"}
+        
+        # Start the background processing
+        logger.info("🚀 Manually starting background processing...")
+        processing_task = asyncio.create_task(auto_ingestion_service.process_jobs_forever())
+        auto_ingestion_service.processing_task = processing_task
+        
+        # Give it a moment to start
+        await asyncio.sleep(0.5)
+        
+        return {
+            "message": "Background processing started",
+            "queue_status": auto_ingestion_service.queue.get_status(),
+            "task_running": not processing_task.done()
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 
 @app.post("/debug/process-single-file")
 async def process_single_file(
