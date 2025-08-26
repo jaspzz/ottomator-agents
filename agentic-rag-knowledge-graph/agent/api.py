@@ -475,6 +475,161 @@ async def start_file_watcher(authenticated: bool = Depends(verify_auth)):
             "traceback": traceback.format_exc()
         }
 
+@app.post("/debug/detailed-scan")
+async def detailed_scan(authenticated: bool = Depends(verify_auth)):
+    """Detailed scan with debugging information"""
+    if not auto_ingestion_service:
+        return {"error": "Auto-ingestion service not available"}
+    
+    watch_dir = Path("/app/ingestion-watch")
+    topic_folders = ['business-central', 'ai-research', 'cloud-computing', 'general']
+    supported_extensions = ['.md', '.txt', '.pdf', '.docx']
+    
+    scan_results = {
+        "watch_dir_exists": watch_dir.exists(),
+        "watch_dir_path": str(watch_dir),
+        "scan_details": {},
+        "total_files_found": 0,
+        "total_files_queued": 0
+    }
+    
+    try:
+        for topic in topic_folders:
+            topic_dir = watch_dir / topic
+            topic_info = {
+                "directory_exists": topic_dir.exists(),
+                "directory_path": str(topic_dir),
+                "items_found": [],
+                "files_processed": 0,
+                "files_skipped": 0,
+                "skip_reasons": []
+            }
+            
+            if topic_dir.exists():
+                try:
+                    # List all items in directory
+                    for item in topic_dir.iterdir():
+                        item_info = {
+                            "name": item.name,
+                            "path": str(item),
+                            "is_file": item.is_file(),
+                            "is_dir": item.is_dir(),
+                        }
+                        
+                        if item.is_file():
+                            item_info.update({
+                                "size": item.stat().st_size,
+                                "suffix": item.suffix,
+                                "suffix_supported": item.suffix in supported_extensions
+                            })
+                            
+                            # Check if this file would be processed
+                            if item.suffix in supported_extensions:
+                                # Try to queue this file
+                                try:
+                                    job_id = await auto_ingestion_service.queue.add_job(str(item), topic, priority=1)
+                                    item_info["queued"] = True
+                                    item_info["job_id"] = job_id
+                                    topic_info["files_processed"] += 1
+                                    scan_results["total_files_queued"] += 1
+                                except Exception as e:
+                                    item_info["queue_error"] = str(e)
+                                    topic_info["files_skipped"] += 1
+                                    topic_info["skip_reasons"].append(f"{item.name}: {str(e)}")
+                            else:
+                                topic_info["files_skipped"] += 1
+                                topic_info["skip_reasons"].append(f"{item.name}: unsupported extension '{item.suffix}'")
+                            
+                            scan_results["total_files_found"] += 1
+                        
+                        topic_info["items_found"].append(item_info)
+                        
+                except Exception as e:
+                    topic_info["scan_error"] = str(e)
+            
+            scan_results["scan_details"][topic] = topic_info
+        
+        # Get final queue status
+        scan_results["final_queue_status"] = auto_ingestion_service.queue.get_status()
+        
+        return scan_results
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+@app.post("/debug/list-all-files")
+async def list_all_files(authenticated: bool = Depends(verify_auth)):
+    """List all files in watch directory with full details"""
+    watch_dir = Path("/app/ingestion-watch")
+    
+    def scan_directory(directory: Path, max_depth: int = 3, current_depth: int = 0):
+        items = []
+        if current_depth >= max_depth:
+            return items
+            
+        try:
+            for item in directory.iterdir():
+                item_info = {
+                    "name": item.name,
+                    "path": str(item),
+                    "relative_path": str(item.relative_to(watch_dir)),
+                    "is_file": item.is_file(),
+                    "is_dir": item.is_dir(),
+                    "depth": current_depth
+                }
+                
+                if item.is_file():
+                    try:
+                        stat = item.stat()
+                        item_info.update({
+                            "size": stat.st_size,
+                            "suffix": item.suffix,
+                            "modified": stat.st_mtime,
+                            "permissions": oct(stat.st_mode)[-3:]
+                        })
+                    except Exception as e:
+                        item_info["stat_error"] = str(e)
+                
+                items.append(item_info)
+                
+                if item.is_dir():
+                    # Recursively scan subdirectories
+                    subdirectory_items = scan_directory(item, max_depth, current_depth + 1)
+                    items.extend(subdirectory_items)
+                    
+        except Exception as e:
+            items.append({
+                "error": f"Cannot scan directory {directory}: {str(e)}",
+                "path": str(directory)
+            })
+        
+        return items
+    
+    try:
+        all_items = scan_directory(watch_dir)
+        
+        return {
+            "watch_directory": str(watch_dir),
+            "directory_exists": watch_dir.exists(),
+            "total_items": len(all_items),
+            "files": [item for item in all_items if item.get("is_file")],
+            "directories": [item for item in all_items if item.get("is_dir")],
+            "errors": [item for item in all_items if "error" in item],
+            "all_items": all_items
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 @app.post("/debug/process-single-file")
 async def process_single_file(
     file_path: str,
