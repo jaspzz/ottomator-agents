@@ -9,22 +9,29 @@ from typing import List
 from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Depends, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+
+from fastapi import FastAPI, HTTPException, Depends, Request, Header, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
+import aiofiles
+from pathlib import Path
 
+# Configure logging FIRST
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# Try to import auto-ingestion service with proper error handling
+auto_ingestion_service = None
 try:
     from ingestion.file_watcher import AutoIngestionService
-except ImportError:
-    logger.warning("Auto-ingestion service not available")
+    logger.info("✅ Auto-ingestion service available")
+except ImportError as e:
+    logger.warning(f"⚠️ Auto-ingestion service not available: {e}")
     AutoIngestionService = None
 
-# Global service instance
-auto_ingestion_service = None
 
 # Update your lifespan function
 @asynccontextmanager

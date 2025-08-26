@@ -5,10 +5,8 @@ import argparse
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
-
-# Import your existing ingestion modules
-from .ingest import process_document, generate_embeddings
-from .chunker import semantic_chunk_document
+import json
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +54,7 @@ class TopicIngestion:
         if not topic_id:
             raise ValueError(f"Topic '{topic_slug}' not found. Create it first.")
         
-        logger.info(f"Ingesting documents for topic: {topic_slug}")
+        logger.info(f"📚 Ingesting documents for topic: {topic_slug}")
         
         # Clean existing topic data if requested
         if clean:
@@ -69,16 +67,17 @@ class TopicIngestion:
         
         processed_count = 0
         
-        # Process all markdown files in the directory
-        for doc_path in docs_path.glob("*.md"):
-            try:
-                logger.info(f"Processing: {doc_path.name}")
-                await self.process_document_with_topic(doc_path, topic_id)
-                processed_count += 1
-            except Exception as e:
-                logger.error(f"Failed to process {doc_path.name}: {e}")
+        # Process all supported files in the directory
+        for doc_path in docs_path.glob("*"):
+            if doc_path.is_file() and doc_path.suffix in ['.md', '.txt']:
+                try:
+                    logger.info(f"📄 Processing: {doc_path.name}")
+                    await self.process_document_with_topic(doc_path, topic_id)
+                    processed_count += 1
+                except Exception as e:
+                    logger.error(f"❌ Failed to process {doc_path.name}: {e}")
         
-        logger.info(f"Successfully processed {processed_count} documents for topic '{topic_slug}'")
+        logger.info(f"✅ Successfully processed {processed_count} documents for topic '{topic_slug}'")
     
     async def process_document_with_topic(self, doc_path: Path, topic_id: str):
         """Process a single document with topic assignment"""
@@ -97,29 +96,31 @@ class TopicIngestion:
                 str(doc_path),  # source
                 content,        # content
                 topic_id,       # topic_id
-                {'file_type': 'markdown', 'original_path': str(doc_path)}  # metadata
+                {'file_type': doc_path.suffix[1:], 'original_path': str(doc_path)}  # metadata
             )
             
-            # Chunk the document
-            chunks = await semantic_chunk_document(content)
+            # Simple chunking - split by double newlines and paragraphs
+            chunks = self.simple_chunk_text(content)
             
             # Process each chunk
-            for i, chunk in enumerate(chunks):
-                # Generate embedding
-                embedding = await generate_embeddings(chunk['content'])
+            for i, chunk_text in enumerate(chunks):
+                if len(chunk_text.strip()) < 50:  # Skip very short chunks
+                    continue
+                    
+                # For now, skip embedding generation since it depends on external functions
+                # You can add this later when the embedding service is properly set up
                 
-                # Insert chunk with topic
+                # Insert chunk with topic (without embedding for now)
                 await conn.execute("""
-                    INSERT INTO chunks (document_id, content, embedding, chunk_index, topic_id, metadata, token_count)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    INSERT INTO chunks (document_id, content, chunk_index, topic_id, metadata, token_count)
+                    VALUES ($1, $2, $3, $4, $5, $6)
                 """,
                     doc_id,
-                    chunk['content'],
-                    embedding,
+                    chunk_text,
                     i,
                     topic_id,
-                    chunk.get('metadata', {}),
-                    len(chunk['content'].split())
+                    {'chunk_method': 'simple'},
+                    len(chunk_text.split())
                 )
             
             logger.info(f"✅ Processed {doc_path.name}: {len(chunks)} chunks")
@@ -127,15 +128,37 @@ class TopicIngestion:
         finally:
             await conn.close()
     
+    def simple_chunk_text(self, text: str, max_chunk_size: int = 1000) -> List[str]:
+        """Simple text chunking by paragraphs and size"""
+        # Split by double newlines (paragraphs)
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        
+        chunks = []
+        current_chunk = ""
+        
+        for paragraph in paragraphs:
+            # If adding this paragraph would exceed max size, save current chunk
+            if len(current_chunk) + len(paragraph) > max_chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = paragraph
+            else:
+                current_chunk += "\n\n" + paragraph if current_chunk else paragraph
+        
+        # Add the last chunk if it has content
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
     async def clean_topic_data(self, topic_id: str):
         """Clean all data for a specific topic"""
         conn = await asyncpg.connect(self.db_url)
         try:
             # Delete chunks first (foreign key constraint)
-            await conn.execute("DELETE FROM chunks WHERE topic_id = $1", topic_id)
+            deleted_chunks = await conn.fetchval("DELETE FROM chunks WHERE topic_id = $1 RETURNING count(*)", topic_id)
             # Delete documents
-            await conn.execute("DELETE FROM documents WHERE topic_id = $1", topic_id)
-            logger.info("✅ Cleaned existing topic data")
+            deleted_docs = await conn.fetchval("DELETE FROM documents WHERE topic_id = $1 RETURNING count(*)", topic_id)
+            logger.info(f"🧹 Cleaned topic data: {deleted_docs} documents, {deleted_chunks} chunks")
         finally:
             await conn.close()
     
@@ -158,12 +181,14 @@ class TopicIngestion:
             print("\n📚 Available Topics:")
             print("=" * 60)
             for topic in topics:
-                print(f"Name: {topic['name']}")
-                print(f"Slug: {topic['slug']}")
-                print(f"Description: {topic['description']}")
-                print(f"Documents: {topic['document_count']}")
-                print(f"Chunks: {topic['chunk_count']}")
+                print(f"📁 Name: {topic['name']}")
+                print(f"🔗 Slug: {topic['slug']}")
+                print(f"📝 Description: {topic['description']}")
+                print(f"📄 Documents: {topic['document_count']}")
+                print(f"🔤 Chunks: {topic['chunk_count']}")
                 print("-" * 40)
+            
+            return topics
             
         finally:
             await conn.close()
