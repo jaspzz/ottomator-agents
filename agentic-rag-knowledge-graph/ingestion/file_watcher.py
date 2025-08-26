@@ -97,10 +97,19 @@ class AutoIngestionService:
         # Scan for existing files
         await self.scan_existing_files()
         
-        # Start processing loop
-        logger.info("⚙️ Starting processing loop...")
-        await self.process_jobs_forever()
-    
+        # Start processing loop in background (don't await it!)
+        logger.info("⚙️ Starting background processing task...")
+        
+        # Create the processing task but DON'T await it
+        processing_task = asyncio.create_task(self.process_jobs_forever())
+        logger.info("📋 Background processing task created and running")
+        
+        # Store the task so we can stop it later if needed
+        self.processing_task = processing_task
+        
+        logger.info("✅ Auto-ingestion service start complete")
+        # Return here so the lifespan can continue
+        
     async def scan_existing_files(self):
         """Scan for existing files in watch directories"""
         logger.info("🔍 Scanning for existing files...")
@@ -131,14 +140,14 @@ class AutoIngestionService:
         return found_files
     
     async def process_jobs_forever(self):
-        """Process jobs forever"""
-        logger.info("🔄 Starting job processing loop...")
+        """Process jobs forever in background"""
+        logger.info("🔄 Background job processor starting...")
         
         while True:
             try:
-                logger.info("⏳ Waiting for jobs...")
+                logger.info("⏳ Waiting for jobs in queue...")
                 
-                # Get next job
+                # Get next job from queue
                 job = await self.queue.get_job()
                 self.queue.processing[job['id']] = job
                 
