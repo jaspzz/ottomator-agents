@@ -174,42 +174,134 @@ class AutoIngestionService:
                 await asyncio.sleep(5)
     
     async def process_single_job(self, job: Dict) -> bool:
-        """Process a single job"""
+        """Process a single job with detailed error handling"""
         try:
             file_path = Path(job['file_path'])
             topic = job['topic']
+            
+            logger.info(f"📄 Starting job processing: {file_path.name}")
             
             if not file_path.exists():
                 logger.error(f"❌ File not found: {file_path}")
                 return False
             
-            logger.info(f"📄 Processing: {file_path.name} ({file_path.stat().st_size} bytes)")
+            logger.info(f"📊 File details: {file_path.name} ({file_path.stat().st_size} bytes, {file_path.suffix})")
             
             # Create temp directory
             temp_dir = Path(f"/tmp/ingestion_{job['id']}")
             temp_dir.mkdir(exist_ok=True)
+            logger.info(f"📁 Created temp directory: {temp_dir}")
             
             # Copy file to temp directory
             temp_file = temp_dir / file_path.name
             shutil.copy2(file_path, temp_file)
+            logger.info(f"📋 Copied file to temp: {temp_file}")
             
-            # Process with topic ingester
-            await self.topic_ingester.ingest_topic_documents(
-                topic_slug=topic,
-                documents_path=str(temp_dir),
-                clean=False
-            )
+            # Process with topic ingester (with detailed error handling)
+            try:
+                logger.info(f"🚀 Starting topic ingestion for topic: {topic}")
+                await self.topic_ingester.ingest_topic_documents(
+                    topic_slug=topic,
+                    documents_path=str(temp_dir),
+                    clean=False
+                )
+                logger.info(f"✅ Topic ingestion completed successfully")
+            except Exception as ingestion_error:
+                logger.error(f"❌ Topic ingestion failed: {ingestion_error}")
+                import traceback
+                logger.error(f"🔍 Ingestion traceback: {traceback.format_exc()}")
+                
+                # Save error details but don't fail completely
+                error_log = {
+                    "job_id": job['id'],
+                    "file_path": job['file_path'],
+                    "topic": topic,
+                    "ingestion_error": str(ingestion_error),
+                    "traceback": traceback.format_exc(),
+                    "failed_at": datetime.now().isoformat()
+                }
+                
+                error_file = self.failed_dir / f"ingestion_error_{job['id']}.json"
+                error_file.write_text(json.dumps(error_log, indent=2))
+                
+                # Cleanup temp directory
+                shutil.rmtree(temp_dir)
+                return False
             
-            # Cleanup
+            # Cleanup temp directory
             shutil.rmtree(temp_dir)
+            logger.info(f"🧹 Cleaned up temp directory")
             
-            logger.info(f"✅ Successfully processed: {file_path.name}")
+            logger.info(f"✅ Job processing completed successfully: {file_path.name}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to process job {job['id']}: {e}")
+            logger.error(f"❌ Critical job processing error: {e}")
+            import traceback
+            logger.error(f"🔍 Critical traceback: {traceback.format_exc()}")
             return False
     
+
+    @app.post("/debug/test-topic-ingestion")
+    async def test_topic_ingestion(authenticated: bool = Depends(verify_auth)):
+        """Test topic ingestion directly"""
+        try:
+            if not auto_ingestion_service:
+                return {"error": "Auto-ingestion service not available"}
+            
+            # Create a simple test file
+            test_dir = Path("/tmp/topic_test")
+            test_dir.mkdir(exist_ok=True)
+            
+            test_file = test_dir / "test_document.md"
+            test_file.write_text("""
+    # Test Document
+
+    This is a test document to verify that topic ingestion is working correctly.
+
+    ## Section 1
+    Some content about Microsoft Dynamics 365 Business Central.
+
+    ## Section 2  
+    More content to test the chunking process.
+    """)
+            
+            # Test ingestion
+            logger.info("🧪 Testing direct topic ingestion...")
+            
+            try:
+                await auto_ingestion_service.topic_ingester.ingest_topic_documents(
+                    topic_slug="business-central",
+                    documents_path=str(test_dir),
+                    clean=False
+                )
+                
+                # Cleanup
+                shutil.rmtree(test_dir)
+                
+                return {
+                    "result": "SUCCESS",
+                    "message": "Direct topic ingestion completed without errors"
+                }
+                
+            except Exception as ingestion_error:
+                # Cleanup
+                shutil.rmtree(test_dir)
+                
+                import traceback
+                return {
+                    "result": "FAILED",
+                    "error": str(ingestion_error),
+                    "traceback": traceback.format_exc()
+                }
+            
+        except Exception as e:
+            import traceback
+            return {
+                "error": str(e),
+                "traceback": traceback.format_exc()
+            }
+
     async def move_file_to_processed(self, job: Dict):
         """Move file to processed directory"""
         try:
