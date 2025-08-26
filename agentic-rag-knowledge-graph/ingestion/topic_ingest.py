@@ -83,8 +83,8 @@ class TopicIngestion:
         """Process a single document with topic assignment"""
         conn = await asyncpg.connect(self.db_url)
         try:
-            # Read document
-            content = doc_path.read_text(encoding='utf-8')
+            # Read document with proper encoding handling
+            content = self.read_file_content(doc_path)
             
             # Insert document with topic
             doc_id = await conn.fetchval("""
@@ -107,9 +107,6 @@ class TopicIngestion:
                 if len(chunk_text.strip()) < 50:  # Skip very short chunks
                     continue
                     
-                # For now, skip embedding generation since it depends on external functions
-                # You can add this later when the embedding service is properly set up
-                
                 # Insert chunk with topic (without embedding for now)
                 await conn.execute("""
                     INSERT INTO chunks (document_id, content, chunk_index, topic_id, metadata, token_count)
@@ -127,6 +124,56 @@ class TopicIngestion:
             
         finally:
             await conn.close()
+    
+    def read_file_content(self, doc_path: Path) -> str:
+        """Read file content with proper handling for different formats"""
+        try:
+            if doc_path.suffix.lower() == '.rtf':
+                # For RTF files, try to extract plain text
+                return self.extract_rtf_text(doc_path)
+            else:
+                # For other files, read as text
+                return doc_path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            # Try with different encodings
+            for encoding in ['latin-1', 'cp1252', 'iso-8859-1']:
+                try:
+                    return doc_path.read_text(encoding=encoding)
+                except UnicodeDecodeError:
+                    continue
+            # If all fail, read as binary and decode errors
+            return doc_path.read_text(encoding='utf-8', errors='ignore')
+       
+    def extract_rtf_text(self, rtf_path: Path) -> str:
+        """Extract plain text from RTF file"""
+        try:
+            # Try to use striprtf library if available
+            try:
+                from striprtf.striprtf import rtf_to_text
+                rtf_content = rtf_path.read_text(encoding='utf-8', errors='ignore')
+                return rtf_to_text(rtf_content)
+            except ImportError:
+                # Fallback: simple RTF text extraction
+                return self.simple_rtf_extraction(rtf_path)
+        except Exception as e:
+            logger.warning(f"⚠️ RTF extraction failed for {rtf_path.name}: {e}")
+            # Fallback to reading as plain text (will have RTF codes)
+            return rtf_path.read_text(encoding='utf-8', errors='ignore')
+    
+    def simple_rtf_extraction(self, rtf_path: Path) -> str:
+        """Simple RTF text extraction without external libraries"""
+        import re
+        
+        content = rtf_path.read_text(encoding='utf-8', errors='ignore')
+        
+        # Remove RTF control words and formatting
+        # This is a very basic extraction - won't be perfect
+        content = re.sub(r'\\[a-z]+\d*\s?', ' ', content)  # Remove control words
+        content = re.sub(r'\\[^a-z]', '', content)         # Remove control symbols
+        content = re.sub(r'[{}]', '', content)             # Remove braces
+        content = re.sub(r'\s+', ' ', content)             # Normalize whitespace
+        
+        return content.strip()
     
     def simple_chunk_text(self, text: str, max_chunk_size: int = 1000) -> List[str]:
         """Simple text chunking by paragraphs and size"""

@@ -62,8 +62,6 @@ class IngestionQueue:
         }
 
 class AutoIngestionService:
-    """Auto-ingestion service - complete working version"""
-    
     def __init__(self):
         logger.info("🔧 Initializing AutoIngestionService...")
         
@@ -80,6 +78,9 @@ class AutoIngestionService:
         self.watch_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
         self.failed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Add RTF to supported extensions
+        self.supported_extensions = ['.md', '.txt', '.pdf', '.docx', '.rtf']
         
         # File watcher (if available)
         self.observer = Observer() if WATCHDOG_AVAILABLE else None
@@ -110,13 +111,13 @@ class AutoIngestionService:
             if topic_dir.exists():
                 logger.info(f"📂 Scanning {topic} directory...")
                 for file_path in topic_dir.glob("*"):
-                    if file_path.is_file() and file_path.suffix in ['.md', '.txt', '.pdf', '.docx']:
+                    if file_path.is_file() and file_path.suffix in self.supported_extensions:
                         job_id = await self.queue.add_job(str(file_path), topic, priority=1)
                         found_files += 1
                         logger.info(f"📋 Queued existing file: {file_path.name} → {topic}")
                     else:
                         if file_path.is_file():
-                            logger.info(f"⏭️ Skipped unsupported file: {file_path.name}")
+                            logger.info(f"⏭️ Skipped unsupported file: {file_path.name} (extension: {file_path.suffix})")
             else:
                 logger.info(f"📁 Creating topic directory: {topic_dir}")
                 topic_dir.mkdir(exist_ok=True)
