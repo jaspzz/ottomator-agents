@@ -240,67 +240,6 @@ class AutoIngestionService:
             import traceback
             logger.error(f"🔍 Critical traceback: {traceback.format_exc()}")
             return False
-    
-
-    @app.post("/debug/test-topic-ingestion")
-    async def test_topic_ingestion(authenticated: bool = Depends(verify_auth)):
-        """Test topic ingestion directly"""
-        try:
-            if not auto_ingestion_service:
-                return {"error": "Auto-ingestion service not available"}
-            
-            # Create a simple test file
-            test_dir = Path("/tmp/topic_test")
-            test_dir.mkdir(exist_ok=True)
-            
-            test_file = test_dir / "test_document.md"
-            test_file.write_text("""
-    # Test Document
-
-    This is a test document to verify that topic ingestion is working correctly.
-
-    ## Section 1
-    Some content about Microsoft Dynamics 365 Business Central.
-
-    ## Section 2  
-    More content to test the chunking process.
-    """)
-            
-            # Test ingestion
-            logger.info("🧪 Testing direct topic ingestion...")
-            
-            try:
-                await auto_ingestion_service.topic_ingester.ingest_topic_documents(
-                    topic_slug="business-central",
-                    documents_path=str(test_dir),
-                    clean=False
-                )
-                
-                # Cleanup
-                shutil.rmtree(test_dir)
-                
-                return {
-                    "result": "SUCCESS",
-                    "message": "Direct topic ingestion completed without errors"
-                }
-                
-            except Exception as ingestion_error:
-                # Cleanup
-                shutil.rmtree(test_dir)
-                
-                import traceback
-                return {
-                    "result": "FAILED",
-                    "error": str(ingestion_error),
-                    "traceback": traceback.format_exc()
-                }
-            
-        except Exception as e:
-            import traceback
-            return {
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
 
     async def move_file_to_processed(self, job: Dict):
         """Move file to processed directory"""
